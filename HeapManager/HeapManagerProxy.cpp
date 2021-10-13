@@ -3,7 +3,7 @@
 
 namespace HeapManagerProxy
 {
-	size_t HeapManager::s_MinumumToLeave = 0;// sizeof(MemoryBlock);
+	size_t HeapManager::s_MinumumToLeave = sizeof(MemoryBlock);
 
 	HeapManager* CreateHeapManager(void* pHeapMemory, const size_t sizeHeap, const unsigned int numDescriptors)
 	{
@@ -18,105 +18,162 @@ namespace HeapManagerProxy
 
 	HeapManager::HeapManager(void* pHeapAllocatorMemory, const size_t sizeHeap)
 	{
-		assert((pHeapAllocatorMemory != nullptr) && (sizeHeap > sizeof(MemoryBlock)));
+		pFreeList = nullptr;
+		pOutstandingAllocations = nullptr;
 
 		pHeapStartAddress = pHeapAllocatorMemory;
-		pHeapEndAddress = static_cast<char*>(pHeapAllocatorMemory) + sizeHeap - sizeof(MemoryBlock);
-
-		pFreeList = reinterpret_cast<MemoryBlock*>(pHeapEndAddress);
-
-		pFreeList->pBaseAddress = pHeapAllocatorMemory;
-		pFreeList->BlockSize = 0;
-		pFreeList->pNextBlock = nullptr;
-
-		pHeapAllocatorMemory = nullptr;
+		pHeapEndAddress = static_cast<char*>(pHeapStartAddress) + sizeHeap;
 	}
 
-	// allocate a block of memeory
 	void* HeapManager::alloc(const size_t sizeAlloc, const unsigned int alignment)
 	{
-		MemoryBlock* pBlock = FindFirstFittingFreeBlock(sizeAlloc);
+		MemoryBlock* pBlockNode = FindFirstFittingFreeBlock(sizeAlloc, alignment);
 
-		// no free block fit the size
-		if (pBlock == nullptr && 
-			(static_cast<char*>(pHeapEndAddress) - sizeAlloc) >= static_cast<char*>(pHeapStartAddress))
+		void* add1 = pHeapStartAddress;
+		void* add2 = pHeapEndAddress;
+
+		if (pBlockNode == nullptr)
 		{
-			pBlock = GetFreeMemoryBlock();
-			pBlock->pBaseAddress = pHeapStartAddress;
-			pBlock->BlockSize = sizeAlloc;
+			size_t maxCapacity = static_cast<char*>(AlignDownAddress(pHeapEndAddress, alignment)) - static_cast<char*>(AlignUpAddress(pHeapStartAddress, alignment)) - s_MinumumToLeave;
+			if (maxCapacity < sizeAlloc) // left memory not enough
+				return nullptr;
 
-			pHeapStartAddress = static_cast<char*>(pHeapStartAddress) + sizeAlloc;
+			pBlockNode = pBlockNode ? pBlockNode : GetFreeMemoryBlock();
+			pBlockNode = pBlockNode ? pBlockNode : CreateFreeMemoryBlock();
 
-			assert(pHeapStartAddress <= pHeapEndAddress);
+			if (pBlockNode == nullptr) // out of all memory
+				return nullptr;
+
+			void* pBlockStartAddress = AlignDownAddress(static_cast<char*>(pHeapEndAddress) - sizeAlloc, alignment);
+
+			pBlockNode->pBaseAddress = pBlockStartAddress;
+			pBlockNode->BlockSize = static_cast<char*>(pHeapEndAddress) - static_cast<char*>(pBlockStartAddress);
+
+			pHeapEndAddress = pBlockStartAddress;
 		}
 
-		if (pBlock)
-		{
-			pBlock->pNextBlock = pOutstandingAllocations;
-			pOutstandingAllocations = pBlock;
-		}
+		assert(pBlockNode && pHeapStartAddress <= pHeapEndAddress);
 
-		return pBlock ? pBlock->pBaseAddress : nullptr;
+		pBlockNode->pNextBlock = pOutstandingAllocations;
+		pOutstandingAllocations = pBlockNode;
+
+		return pBlockNode->pBaseAddress;
 	}
 
 	bool HeapManager::free(const void* pPtr)
 	{
-		assert(pOutstandingAllocations != nullptr);
-
-		MemoryBlock* pAllocatedBlock = pOutstandingAllocations;
+		MemoryBlock* pCurBlock = pOutstandingAllocations;
 		MemoryBlock* pPrevBlock = nullptr;
-		while (pAllocatedBlock)
+		while (pCurBlock)
 		{
-			if (pAllocatedBlock->pBaseAddress == pPtr)
+			if (pCurBlock->pBaseAddress == pPtr)
 			{
 				if (pPrevBlock)
-					pPrevBlock->pNextBlock = pAllocatedBlock->pNextBlock;
+					pPrevBlock->pNextBlock = pCurBlock->pNextBlock;
 				else
-					pOutstandingAllocations = pAllocatedBlock->pNextBlock;
+					pOutstandingAllocations = pCurBlock->pNextBlock;
+				pCurBlock->pNextBlock = nullptr;
 
-				ReturnMemoryBlock(pAllocatedBlock);
-				return true;
+				ReturnMemoryBlock(pCurBlock);
+				break;
+			}
+
+			pPrevBlock = pCurBlock;
+			pCurBlock = pCurBlock->pNextBlock;
+		}
+
+		return (pCurBlock != nullptr);
+	}
+
+	void HeapManager::Collect()
+	{
+		MemoryBlock* pCurBlock = pFreeList;
+		MemoryBlock* pPrevBlock = nullptr;
+		MemoryBlock* pEmptyBlocks = nullptr;
+
+		// remove all empty block first
+		while (pCurBlock)
+		{
+			if (pCurBlock->BlockSize == 0)
+			{
+				if (pEmptyBlocks)
+					pEmptyBlocks->pNextBlock = pCurBlock;
+				else
+					pEmptyBlocks = pCurBlock;
+
+				if (pPrevBlock)
+					pPrevBlock->pNextBlock = pCurBlock->pNextBlock;
+				else
+					pFreeList = pCurBlock->pNextBlock;
+
+				MemoryBlock* pNext = pCurBlock->pNextBlock;
+				pCurBlock->pNextBlock = nullptr;
+				pCurBlock = pNext;
 			}
 			else
 			{
-				pPrevBlock = pAllocatedBlock;
-				pAllocatedBlock = pAllocatedBlock->pNextBlock;
+				pPrevBlock = pCurBlock;
+				pCurBlock = pCurBlock->pNextBlock;
 			}
 		}
 
-		return false;
-	}
+		pCurBlock = pFreeList;
+		pPrevBlock = nullptr;
+		while (pCurBlock)
+		{
+			void* pPrevBlockEndAddress = pPrevBlock ? static_cast<char*>(pPrevBlock->pBaseAddress) + pPrevBlock->BlockSize : nullptr;
+			if (pPrevBlock && pPrevBlockEndAddress == pCurBlock->pBaseAddress)
+			{
+				// start merge
+				pPrevBlock->BlockSize += pCurBlock->BlockSize;
+				pCurBlock->BlockSize = 0;
+				// move to empty blocks
+				if (pEmptyBlocks)
+					pEmptyBlocks->pNextBlock = pCurBlock;
+				else
+					pEmptyBlocks = pCurBlock;
 
-	// garbage collect, merge empty block
-	void HeapManager::Collect()
-	{
-		MemoryBlock* pBlockStartAddr = reinterpret_cast<MemoryBlock*>(pHeapEndAddress);
+				MemoryBlock* pNext = pCurBlock->pNextBlock;
+				pCurBlock->pNextBlock = nullptr;
+				pCurBlock = pNext;
+
+				pPrevBlock->pNextBlock = pCurBlock;
+			}
+			else
+			{
+				pPrevBlock = pCurBlock;
+				pCurBlock = pCurBlock->pNextBlock;
+			}
+		}
+
+		if (pPrevBlock)
+			pPrevBlock->pNextBlock = pEmptyBlocks;
 
 	}
 
 	bool HeapManager::Contains(const void* pPtr)
 	{
-		return (pPtr < pHeapEndAddress);
+		// TODO
+		return true;
 	}
 
 	bool HeapManager::IsAllocated(const void* pPtr)
 	{
-		assert(pOutstandingAllocations != nullptr);
-
-		MemoryBlock* pAllocatedBlock = pOutstandingAllocations;
-		while (pAllocatedBlock)
+		MemoryBlock* pBlock = pOutstandingAllocations;
+		while (pBlock)
 		{
-			if (pAllocatedBlock->pBaseAddress == pPtr)
-				return true;
+			if (pBlock->BlockSize > 0 && pBlock->pBaseAddress == pPtr)
+				break;
 
-			pAllocatedBlock = pAllocatedBlock->pNextBlock;
+			pBlock = pBlock->pNextBlock;
 		}
 
-		return false;
+		return (pBlock != nullptr);
 	}
 
 	void HeapManager::ShowFreeBlocks()
 	{
+		printf("Free Blocks:\n");
 		MemoryBlock* pCurBlock = pFreeList;
 		while (pCurBlock)
 		{
@@ -130,12 +187,14 @@ namespace HeapManagerProxy
 		}
 
 		if (pHeapEndAddress > pHeapStartAddress)
-			printf("Free block start from %p to %p, size %u.\n", pHeapStartAddress, 
+			printf("Free block start from %p to %p, size %u.\n", pHeapStartAddress,
 				pHeapEndAddress, static_cast<char*>(pHeapEndAddress) - static_cast<char*>(pHeapStartAddress));
+
 	}
 
 	void HeapManager::ShowOutstandingAllocations()
 	{
+		printf("Allocated Blocks:\n");
 		MemoryBlock* pCurBlock = pOutstandingAllocations;
 		while (pCurBlock)
 		{
@@ -147,6 +206,7 @@ namespace HeapManagerProxy
 
 			pCurBlock = pCurBlock->pNextBlock;
 		}
+
 	}
 
 	void HeapManager::Destroy()
@@ -154,147 +214,225 @@ namespace HeapManagerProxy
 
 	}
 
-	MemoryBlock* HeapManager::FindFirstFittingFreeBlock(size_t i_size)
+	MemoryBlock* HeapManager::FindFirstFittingFreeBlock(const size_t i_size, const unsigned int alignment)
 	{
 		MemoryBlock* pCurBlock = pFreeList;
 		MemoryBlock* pPrevBlock = nullptr;
+
+		void* pCurBlockEndAddress = nullptr;
+		void* pBlockRequiredStartAddress = nullptr;
+
 		while (pCurBlock)
 		{
-			if (pCurBlock->BlockSize >= i_size)
+			if (pCurBlock->BlockSize > AlignUp(i_size, alignment))
 			{
-				break;
+				pCurBlockEndAddress = static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize;
+				pBlockRequiredStartAddress = AlignDownAddress(static_cast<char*>(pCurBlockEndAddress) - i_size, alignment);
+
+				if (pBlockRequiredStartAddress >= pCurBlock->pBaseAddress)
+					break;
 			}
-			else
-			{
-				pPrevBlock = pCurBlock;
-				pCurBlock = pCurBlock->pNextBlock;
-			}
+
+			pPrevBlock = pCurBlock;
+			pCurBlock = pCurBlock->pNextBlock;
 		}
 
 		if (pCurBlock)
 		{
-			MemoryBlock* pNewBlock = pCurBlock->BlockSize > i_size ? GetFreeMemoryBlock() : nullptr;
-			if (pNewBlock)
+			if (pBlockRequiredStartAddress == pCurBlock->pBaseAddress)
 			{
-				pNewBlock->pBaseAddress = static_cast<char*>(pCurBlock->pBaseAddress) + i_size;
-				pNewBlock->BlockSize = pCurBlock->BlockSize - i_size;
-				pNewBlock->pNextBlock = pCurBlock->pNextBlock;
+				if (pPrevBlock)
+					pPrevBlock->pNextBlock = pCurBlock->pNextBlock;
+				else
+					pFreeList = pCurBlock->pNextBlock;
 
-				pCurBlock->BlockSize = i_size;
+				// break connect
+				pCurBlock->pNextBlock = nullptr;
 			}
-
-			if (pPrevBlock)
-				pPrevBlock->pNextBlock = pNewBlock ? pNewBlock : pCurBlock->pNextBlock;
 			else
-				pFreeList = pNewBlock;
+			{
+				MemoryBlock* pNewBlock = GetFreeMemoryBlock(false); // do not break connect
+				pNewBlock = pNewBlock ? pNewBlock : CreateFreeMemoryBlock();
+
+				assert(pNewBlock);
+				pNewBlock->pBaseAddress = pCurBlock->pBaseAddress;
+				pNewBlock->BlockSize = static_cast<char*>(pBlockRequiredStartAddress) - static_cast<char*>(pCurBlock->pBaseAddress);
+
+				// pNewBlock can be pCurBlock's preview or behind node
+				if (pNewBlock == pCurBlock->pNextBlock)
+				{
+					if (pPrevBlock)
+						pPrevBlock->pNextBlock = pNewBlock;
+					else
+						pFreeList = pNewBlock;
+				}
+				else if(pNewBlock == pPrevBlock)
+				{
+					pNewBlock->pNextBlock = pCurBlock->pNextBlock;
+				}
+				else
+				{
+					MemoryBlock* pNewBlockPrevBlock = FindPrevFreeBlock(pNewBlock);
+					// break old connect first
+					if (pNewBlockPrevBlock)
+						pNewBlockPrevBlock->pNextBlock = pNewBlock->pNextBlock;
+
+					// connect
+					if (pPrevBlock)
+						pPrevBlock->pNextBlock = pNewBlock;
+					else
+						pFreeList = pNewBlock;
+					pNewBlock->pNextBlock = pCurBlock->pNextBlock;
+				}
+
+				// break connect
+				pCurBlock->pBaseAddress = pBlockRequiredStartAddress;
+				pCurBlock->BlockSize = pCurBlock->BlockSize - pNewBlock->BlockSize;
+				pCurBlock->pNextBlock = nullptr;
+			}
 		}
+
 		return pCurBlock;
 	}
 
-	MemoryBlock* HeapManager::FindBestFittingFreeBlock(size_t i_size)
+	MemoryBlock* HeapManager::FindBestFittingFreeBlock(const size_t i_size, const unsigned int alignment)
 	{
+		// TODO
 		return nullptr;
 	}
 
-	MemoryBlock* HeapManager::GetFreeMemoryBlock()
+	MemoryBlock* HeapManager::FindPrevFreeBlock(MemoryBlock* i_pBlock)
 	{
-		MemoryBlock* pFreeBlock = pFreeList;
-		while (pFreeBlock)
-		{
-			if(pFreeBlock->BlockSize == 0)
-				return pFreeBlock;
+		MemoryBlock* pCurBlock = pFreeList;
+		MemoryBlock* pPrevBlock = nullptr;
 
-			pFreeBlock = pFreeBlock->pNextBlock;
+		while (pCurBlock)
+		{
+			if(pCurBlock == i_pBlock)
+				break;
+
+			pPrevBlock = pCurBlock;
+			pCurBlock = pCurBlock->pNextBlock;
 		}
 
-		if (pFreeBlock == nullptr && static_cast<char*>(pHeapStartAddress) + sizeof(MemoryBlock) < pHeapEndAddress)
-		{
-			pHeapEndAddress = static_cast<char*>(pHeapEndAddress) - sizeof(MemoryBlock);
-			pFreeBlock = reinterpret_cast<MemoryBlock*>(pHeapEndAddress);
+		return pPrevBlock;
+	}
 
-			pFreeBlock->BlockSize = 0;
-			pFreeBlock->pNextBlock = nullptr;
-			pFreeBlock->pBaseAddress = nullptr;
+	MemoryBlock* HeapManager::GetFreeMemoryBlock(bool bBreakConnect)
+	{
+		MemoryBlock* pCurBlock = pFreeList;
+		MemoryBlock* pPrevBlock = nullptr;
+
+		while (pCurBlock)
+		{
+			if (pCurBlock->BlockSize == 0)
+			{
+				// if break connect automatic
+				if (bBreakConnect)
+				{
+					if (pPrevBlock)
+						pPrevBlock->pNextBlock = pCurBlock->pNextBlock;
+					else
+						pFreeList = pCurBlock->pNextBlock;
+				}
+
+				pCurBlock->pBaseAddress = nullptr;
+
+				if(bBreakConnect)
+					pCurBlock->pNextBlock = nullptr;
+
+				break;
+			}
+
+			pPrevBlock = pCurBlock;
+			pCurBlock = pCurBlock->pNextBlock;
 		}
 
-		return pFreeBlock;
+		return pCurBlock;
+	}
+
+	MemoryBlock* HeapManager::CreateFreeMemoryBlock()
+	{
+		if (static_cast<char*>(pHeapStartAddress) + sizeof(MemoryBlock) > pHeapEndAddress)
+			return nullptr; // out of all memory
+
+		MemoryBlock* pNewBlock = reinterpret_cast<MemoryBlock*>(pHeapStartAddress);
+		pNewBlock->BlockSize = 0;
+		pNewBlock->pBaseAddress = nullptr;
+		pNewBlock->pNextBlock = nullptr;
+
+		pHeapStartAddress = pNewBlock + 1;
+
+		return pNewBlock;
 	}
 
 	void HeapManager::ReturnMemoryBlock(MemoryBlock* i_pFreeBlock)
 	{
-		assert(i_pFreeBlock != nullptr);
-
 		if (pFreeList == nullptr)
 		{
 			i_pFreeBlock->pNextBlock = pFreeList;
 			pFreeList = i_pFreeBlock;
+
+			if (pHeapStartAddress == pHeapEndAddress)
+			{
+				pHeapEndAddress = static_cast<char*>(pHeapStartAddress) + i_pFreeBlock->BlockSize;
+				pFreeList->BlockSize = 0;
+				pFreeList->pBaseAddress = nullptr;
+			}
+
 			return;
 		}
 
-		MemoryBlock* pCurFreeBlock = pFreeList;
-		MemoryBlock* pPrevBlock = nullptr;
-		while (pCurFreeBlock)
-		{
-			// skip all free block
-			if(pCurFreeBlock->BlockSize == 0)
-				continue;
-
-			void* pFreeBlockEndAddress = static_cast<char*>(i_pFreeBlock->pBaseAddress) + i_pFreeBlock->BlockSize;
-			void* pPrevBlockEndAddress = pPrevBlock? static_cast<char*>(pPrevBlock->pBaseAddress) + pPrevBlock->BlockSize : nullptr;
-			if (pFreeBlockEndAddress <= pCurFreeBlock->pBaseAddress)
-			{
-				// insert in order
-				// merge begind
-				if (pFreeBlockEndAddress == pCurFreeBlock->pBaseAddress)
-				{
-					pCurFreeBlock->pBaseAddress = i_pFreeBlock->pBaseAddress;
-					pCurFreeBlock->BlockSize += i_pFreeBlock->BlockSize;
-
-					// should also connect to the link
-					i_pFreeBlock->BlockSize = 0;
-					i_pFreeBlock->pNextBlock = pCurFreeBlock->pNextBlock;
-					pCurFreeBlock->pNextBlock = i_pFreeBlock;
-				}
-
-				// merge front
-				if (pPrevBlockEndAddress && pPrevBlockEndAddress == pCurFreeBlock->pBaseAddress)
-				{
-					pPrevBlock->BlockSize += pCurFreeBlock->BlockSize;
-
-					// do not break the link
-					pCurFreeBlock->BlockSize = 0;
-				}
-
-				return;
-			}
-			else
-			{
-				pPrevBlock = pCurFreeBlock;
-				pCurFreeBlock = pCurFreeBlock->pNextBlock;
-			}
-		}
-
-		assert(pPrevBlock != nullptr);
-		pPrevBlock->pNextBlock = i_pFreeBlock;
-		i_pFreeBlock->pNextBlock = nullptr;
-	}
-
-	size_t HeapManager::GetLargestFreeBlock()
-	{
-		size_t iMaxCapacity = static_cast<char*>(pHeapEndAddress) - static_cast<char*>(pHeapStartAddress);
+		// insert according pBaseAddress in order
 		MemoryBlock* pCurBlock = pFreeList;
-		bool bHasFreeBlock = false;
+		MemoryBlock* pPrevBlock = nullptr;
+
+		void* pFreeBlockEndAddress = static_cast<char*>(i_pFreeBlock->pBaseAddress) + i_pFreeBlock->BlockSize;
+
 		while (pCurBlock)
 		{
-			iMaxCapacity = pCurBlock->BlockSize > iMaxCapacity ? pCurBlock->BlockSize : iMaxCapacity;
-			bHasFreeBlock = pCurBlock->BlockSize == 0 ? true : bHasFreeBlock;
+			if (pCurBlock->BlockSize > 0 && pCurBlock->pBaseAddress >= pFreeBlockEndAddress)
+				break;
+
+			pPrevBlock = pCurBlock;
+			pCurBlock = pCurBlock->pNextBlock;
+		}
+
+		if (pCurBlock)
+		{
+			// insert in order
+			i_pFreeBlock->pNextBlock = pCurBlock;
+			if (pPrevBlock)
+				pPrevBlock->pNextBlock = i_pFreeBlock;
+			else
+				pFreeList = i_pFreeBlock;
+		}
+		else
+		{
+			pPrevBlock->pNextBlock = i_pFreeBlock;
+			i_pFreeBlock->pNextBlock = nullptr;
+		}
+	}
+
+	size_t HeapManager::GetLargestFreeBlock(const unsigned int alignment)
+	{
+		size_t iMaxCapacity = static_cast<char*>(AlignDownAddress(pHeapEndAddress, alignment)) - static_cast<char*>(AlignUpAddress(pHeapStartAddress, alignment));
+		MemoryBlock* pCurBlock = pFreeList;
+
+		while (pCurBlock)
+		{
+
+			if (pCurBlock->BlockSize > 0)
+			{
+				void* start = AlignUpAddress(pCurBlock->pBaseAddress, alignment);
+				void* end = AlignDownAddress(static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize, alignment);
+				size_t capacity = static_cast<char*>(end) - static_cast<char*>(start);
+				iMaxCapacity = capacity > iMaxCapacity ? capacity : iMaxCapacity;
+			}
 
 			pCurBlock = pCurBlock->pNextBlock;
 		}
 
-		if (iMaxCapacity == static_cast<char*>(pHeapEndAddress) - static_cast<char*>(pHeapStartAddress) && bHasFreeBlock)
-			return iMaxCapacity;
-		else
-			return bHasFreeBlock ? iMaxCapacity : iMaxCapacity - sizeof(MemoryBlock);
+		return iMaxCapacity;
 	}
 }
