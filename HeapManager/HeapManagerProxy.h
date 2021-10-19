@@ -22,11 +22,15 @@ namespace HeapManagerProxy
 		void* pHeapStartAddress = nullptr;
 		void* pHeapEndAddress = nullptr;
 
-		void* pHeapLeft = nullptr;
-		void* pHeapRight = nullptr;
+		void* pHeapAllocedEndAddress = nullptr;
 
 	public:
 		static size_t s_MinumumToLeave;
+
+		static unsigned char _bNoMansLandFill;
+		static unsigned char _bAlignLandFill;
+		static unsigned char _bDeadLandFill;
+		static unsigned char _bCleanLandFill;
 
 		HeapManager() = delete; // remove default constructor
 		HeapManager(void* pHeapAllocatorMemory, const size_t sizeHeap);
@@ -69,12 +73,12 @@ namespace HeapManagerProxy
 	// create a HeapManager
 	HeapManager* CreateHeapManager(void* pHeapMemory, const size_t sizeHeap, const unsigned int numDescriptors);
 
-	inline bool IsPowerOfTwo(unsigned int value)
+	inline bool IsPowerOfTwo(size_t value)
 	{
 		return !(value == 0) && !(value & (value - 1));
 	}
 
-	inline unsigned int AlignDown(unsigned int i_value, unsigned int i_align)
+	inline uintptr_t AlignDown(uintptr_t i_value, uintptr_t i_align)
 	{
 		assert(i_align);
 		assert(IsPowerOfTwo(i_align));
@@ -82,7 +86,7 @@ namespace HeapManagerProxy
 		return i_value & ~(i_align - 1);
 	}
 
-	inline unsigned int AlignUp(unsigned int i_value, unsigned int i_align)
+	inline uintptr_t AlignUp(uintptr_t i_value, uintptr_t i_align)
 	{
 		assert(i_align);
 		assert(IsPowerOfTwo(i_align));

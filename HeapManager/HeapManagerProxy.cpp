@@ -1,9 +1,14 @@
 #include "HeapManagerProxy.h"
 #include <stdio.h>
+#include <string.h>
 
 namespace HeapManagerProxy
 {
 	size_t HeapManager::s_MinumumToLeave = sizeof(MemoryBlock);
+	unsigned char HeapManager::_bNoMansLandFill = 0xFD;
+	unsigned char HeapManager::_bAlignLandFill = 0XED;
+	unsigned char HeapManager::_bDeadLandFill = 0XDD;
+	unsigned char HeapManager::_bCleanLandFill = 0xCD;
 
 	HeapManager* CreateHeapManager(void* pHeapMemory, const size_t sizeHeap, const unsigned int numDescriptors)
 	{
@@ -23,6 +28,9 @@ namespace HeapManagerProxy
 
 		pHeapStartAddress = pHeapAllocatorMemory;
 		pHeapEndAddress = static_cast<char*>(pHeapStartAddress) + sizeHeap;
+
+		pHeapAllocedEndAddress = pHeapEndAddress;
+		memset(pHeapStartAddress, _bDeadLandFill, sizeHeap);
 	}
 
 	void* HeapManager::alloc(const size_t sizeAlloc, const unsigned int alignment)
@@ -56,6 +64,9 @@ namespace HeapManagerProxy
 
 		pBlockNode->pNextBlock = pOutstandingAllocations;
 		pOutstandingAllocations = pBlockNode;
+
+		memset(pBlockNode->pBaseAddress, _bAlignLandFill, pBlockNode->BlockSize);
+		memset(pBlockNode->pBaseAddress, _bCleanLandFill, sizeAlloc);
 
 		return pBlockNode->pBaseAddress;
 	}
@@ -149,12 +160,24 @@ namespace HeapManagerProxy
 		if (pPrevBlock)
 			pPrevBlock->pNextBlock = pEmptyBlocks;
 
+		pCurBlock = pFreeList;
+		while (pCurBlock && pCurBlock->BlockSize > 0)
+		{
+			if (pCurBlock->pBaseAddress == pHeapEndAddress)
+			{
+				pHeapEndAddress = static_cast<char*>(pHeapEndAddress) + pCurBlock->BlockSize;
+
+				pCurBlock->pBaseAddress = nullptr;
+				pCurBlock->BlockSize = 0;
+			}
+
+			pCurBlock = pCurBlock->pNextBlock;
+		}
 	}
 
 	bool HeapManager::Contains(const void* pPtr)
 	{
-		// TODO
-		return true;
+		return (pPtr >= pHeapStartAddress && pPtr <= pHeapAllocedEndAddress);
 	}
 
 	bool HeapManager::IsAllocated(const void* pPtr)
@@ -173,23 +196,23 @@ namespace HeapManagerProxy
 
 	void HeapManager::ShowFreeBlocks()
 	{
+
 		printf("Free Blocks:\n");
+		if (pHeapEndAddress > pHeapStartAddress)
+			printf("Free block start from %p to %p, size %zu.\n", pHeapStartAddress,
+				pHeapEndAddress, static_cast<char*>(pHeapEndAddress) - static_cast<char*>(pHeapStartAddress));
+
 		MemoryBlock* pCurBlock = pFreeList;
 		while (pCurBlock)
 		{
 			if (pCurBlock->BlockSize > 0)
 			{
 				void* endPoint = static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize;
-				printf("Free block start from %p to %p, size %u.\n", pCurBlock->pBaseAddress, endPoint, pCurBlock->BlockSize);
+				printf("Free block start from %p to %p, size %zu.\n", pCurBlock->pBaseAddress, endPoint, pCurBlock->BlockSize);
 			}
 
 			pCurBlock = pCurBlock->pNextBlock;
 		}
-
-		if (pHeapEndAddress > pHeapStartAddress)
-			printf("Free block start from %p to %p, size %u.\n", pHeapStartAddress,
-				pHeapEndAddress, static_cast<char*>(pHeapEndAddress) - static_cast<char*>(pHeapStartAddress));
-
 	}
 
 	void HeapManager::ShowOutstandingAllocations()
@@ -201,7 +224,7 @@ namespace HeapManagerProxy
 			if (pCurBlock->BlockSize > 0)
 			{
 				void* endPoint = static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize;
-				printf("Allocated block start from %p to %p, size %u.\n", pCurBlock->pBaseAddress, endPoint, pCurBlock->BlockSize);
+				printf("Allocated block start from %p to %p, size %zu.\n", pCurBlock->pBaseAddress, endPoint, pCurBlock->BlockSize);
 			}
 
 			pCurBlock = pCurBlock->pNextBlock;
@@ -368,6 +391,10 @@ namespace HeapManagerProxy
 
 	void HeapManager::ReturnMemoryBlock(MemoryBlock* i_pFreeBlock)
 	{
+		assert(i_pFreeBlock);
+
+		memset(i_pFreeBlock->pBaseAddress, _bDeadLandFill, i_pFreeBlock->BlockSize);
+
 		if (pFreeList == nullptr)
 		{
 			i_pFreeBlock->pNextBlock = pFreeList;
