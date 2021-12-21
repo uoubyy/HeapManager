@@ -19,21 +19,8 @@ bool HeapManager_UnitTest()
 	const size_t 		sizeHeap = 1024 * 1024;
 	const unsigned int 	numDescriptors = 2048;
 
-#ifdef USE_HEAP_ALLOC
-	void* pHeapMemory = HeapAlloc(GetProcessHeap(), 0, sizeHeap);
-#else
-	// Get SYSTEM_INFO, which includes the memory page size
-	SYSTEM_INFO SysInfo;
-	GetSystemInfo(&SysInfo);
-	// round our size to a multiple of memory page size
-	assert(SysInfo.dwPageSize > 0);
-	size_t sizeHeapInPageMultiples = SysInfo.dwPageSize * ((sizeHeap + SysInfo.dwPageSize) / SysInfo.dwPageSize);
-	void* pHeapMemory = VirtualAlloc(NULL, sizeHeapInPageMultiples, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#endif
-	assert(pHeapMemory);
-
 	// Create a heap manager for my test heap.
-	HeapManager* pHeapManager = CreateHeapManager(pHeapMemory, sizeHeap, numDescriptors);
+	HeapManager* pHeapManager = CreateHeapManager(sizeHeap, numDescriptors);
 	assert(pHeapManager);
 
 	if (pHeapManager == nullptr)
@@ -237,17 +224,8 @@ bool HeapManager_UnitTest()
 		}
 	}
 
-	pHeapManager->Destroy();
+	Destroy(pHeapManager);
 	pHeapManager = nullptr;
-
-	if (pHeapMemory)
-	{
-#ifdef USE_HEAP_ALLOC
-		HeapFree(GetProcessHeap(), 0, pHeapMemory);
-#else
-		VirtualFree(pHeapMemory, 0, MEM_RELEASE);
-#endif
-	}
 
 	// we succeeded
 	return true;

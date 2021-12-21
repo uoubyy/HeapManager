@@ -9,8 +9,12 @@ namespace HeapManagerProxy
 	struct MemoryBlock
 	{
 		void* pBaseAddress;
-		size_t BlockSize;
 		struct MemoryBlock* pNextBlock;
+		size_t BlockSize;
+		MemoryBlock(void* i_pBaseAddress, MemoryBlock* i_pNextBlock, size_t i_BlockSize) :
+			pBaseAddress(i_pBaseAddress),
+			pNextBlock(i_pNextBlock),
+			BlockSize(i_BlockSize) {}
 	};
 
 	class HeapManager
@@ -46,7 +50,7 @@ namespace HeapManagerProxy
 
 		bool Contains(const void* pPtr);
 
-		bool IsAllocated(const void* pPtr);	
+		bool IsAllocated(const void* pPtr);
 
 		void ShowFreeBlocks();
 
@@ -54,24 +58,24 @@ namespace HeapManagerProxy
 
 		size_t GetLargestFreeBlock(const unsigned int alignment = 4);
 
-		void Destroy();
+		bool IsEmpty() const { return pOutstandingAllocations == nullptr; }
 
 	private:
 		MemoryBlock* FindFirstFittingFreeBlock(const size_t i_size, const unsigned int alignment = 4);
 
 		MemoryBlock* FindBestFittingFreeBlock(const size_t i_size, const unsigned int alignment = 4);
 
-		MemoryBlock* GetFreeMemoryBlock(bool bBreakConnect = true);
+		MemoryBlock* GetFreeMemoryBlockDescriptor();
 
-		MemoryBlock* CreateFreeMemoryBlock();
+		MemoryBlock* CreateFreeMemoryBlockDescriptor();
 
-		void ReturnMemoryBlock(MemoryBlock* i_pFreeBlock);
-
-		MemoryBlock* FindPrevFreeBlock(MemoryBlock* i_pBlock);
+		void ReturnMemoryBlockDescriptor(MemoryBlock* i_pFreeBlock);
 	};
 
 	// create a HeapManager
-	HeapManager* CreateHeapManager(void* pHeapMemory, const size_t sizeHeap, const unsigned int numDescriptors);
+	HeapManager* CreateHeapManager(const size_t sizeHeap, const unsigned int numDescriptors, void* pHeapMemory = nullptr);
+
+	void Destroy(HeapManager* pHeapManager);
 
 	inline bool IsPowerOfTwo(size_t value)
 	{
