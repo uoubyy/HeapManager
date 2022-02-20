@@ -21,7 +21,7 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{20cef72b-1a75-4d5d-ad40-307947af3306}</ProjectGuid>
+    <ProjectGuid>{6ae411de-3b44-40fc-93fc-de7ed38ddd41}</ProjectGuid>
     <RootNamespace>HeapManager</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
@@ -139,14 +139,22 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="HeapManagerProxy.cpp" />
-    <ClCompile Include="Log.cpp" />
-    <ClCompile Include="main.cpp" />
+    <ClCompile Include="Application.cpp" />
+    <ClCompile Include="BitArray.cpp" />
+    <ClCompile Include="FixedSizeAllocator.cpp" />
+    <ClCompile Include="HeapAllocator.cpp" />
+    <ClCompile Include="HeapManager.cpp" />
+    <ClCompile Include="Utils.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="HeapManagerProxy.h" />
+    <ClInclude Include="BitArray.h" />
+    <ClInclude Include="FixedSizeAllocator.h" />
+    <ClInclude Include="HeapAllocator.h" />
+    <ClInclude Include="HeapManager.h" />
     <ClInclude Include="HeapManager_UnitTest.h" />
-    <ClInclude Include="Log.h" />
+    <ClInclude Include="IAllocator.h" />
+    <ClInclude Include="MemorySystem_UnitTest.h" />
+    <ClInclude Include="Utils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

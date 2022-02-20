@@ -1,10 +1,13 @@
 #pragma once
-#include "HeapManagerProxy.h"
 #include <Windows.h>
 
 #include <assert.h>
 #include <algorithm>
 #include <vector>
+
+#include "HeapManager.h"
+#include "HeapAllocator.h"
+#include "FixedSizeAllocator.h"
 
 #define SUPPORTS_ALIGNMENT
 #define SUPPORTS_SHOWFREEBLOCKS
@@ -20,10 +23,13 @@ bool HeapManager_UnitTest()
 	const unsigned int 	numDescriptors = 2048;
 
 	// Create a heap manager for my test heap.
-	HeapManager* pHeapManager = CreateHeapManager(sizeHeap, numDescriptors);
-	assert(pHeapManager);
+	HeapManager* pHeapManager = new HeapManager();
+	pHeapManager->CreateHeaps();
 
-	if (pHeapManager == nullptr)
+	HeapAllocator* pHeapAllocator = pHeapManager->GetDefaultHeap();
+	assert(pHeapAllocator);
+
+	if (pHeapAllocator == nullptr)
 		return false;
 
 #ifdef TEST_SINGLE_LARGE_ALLOCATION
@@ -31,46 +37,46 @@ bool HeapManager_UnitTest()
 	// an allocation worked. Also helped test my ShowFreeBlocks() and ShowOutstandingAllocations().
 	{
 #ifdef SUPPORTS_SHOWFREEBLOCKS
-		pHeapManager->ShowFreeBlocks();
+		pHeapAllocator->ShowFreeBlocks();
 #endif // SUPPORTS_SHOWFREEBLOCKS
 
-		size_t largestBeforeAlloc = pHeapManager->GetLargestFreeBlock();
-		void* pPtr = pHeapManager->alloc(largestBeforeAlloc - HeapManager::s_MinumumToLeave);
+		size_t largestBeforeAlloc = pHeapAllocator->GetLargestFreeBlock();
+		void* pPtr = pHeapAllocator->alloc(largestBeforeAlloc - HeapAllocator::s_MinumumToLeave);
 
 		if (pPtr)
 		{
 #if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
 			printf("After large allocation:\n");
 #ifdef SUPPORTS_SHOWFREEBLOCKS
-			pHeapManager->ShowFreeBlocks();
+			pHeapAllocator->ShowFreeBlocks();
 #endif // SUPPORTS_SHOWFREEBLOCKS
 #ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-			pHeapManager->ShowOutstandingAllocations();
+			pHeapAllocator->ShowOutstandingAllocations();
 #endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
 			printf("\n");
 #endif
 
-			size_t largestAfterAlloc = pHeapManager->GetLargestFreeBlock();
-			bool success = pHeapManager->Contains(pPtr) && pHeapManager->IsAllocated(pPtr);
+			size_t largestAfterAlloc = pHeapAllocator->GetLargestFreeBlock();
+			bool success = pHeapAllocator->Contains(pPtr) && pHeapAllocator->IsAllocated(pPtr);
 			assert(success);
 
-			success = pHeapManager->free(pPtr);
+			success = pHeapAllocator->free(pPtr);
 			assert(success);
 
-			pHeapManager->Collect();
+			pHeapAllocator->Collect();
 
 #if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
 			printf("After freeing allocation and garbage collection:\n");
 #ifdef SUPPORTS_SHOWFREEBLOCKS
-			pHeapManager->ShowFreeBlocks();
+			pHeapAllocator->ShowFreeBlocks();
 #endif // SUPPORTS_SHOWFREEBLOCKS
 #ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-			pHeapManager->ShowOutstandingAllocations();
+			pHeapAllocator->ShowOutstandingAllocations();
 #endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
 			printf("\n");
 #endif
 
-			size_t largestAfterCollect = pHeapManager->GetLargestFreeBlock();
+			size_t largestAfterCollect = pHeapAllocator->GetLargestFreeBlock();
 		}
 	}
 #endif
@@ -97,23 +103,23 @@ bool HeapManager_UnitTest()
 
 		const unsigned int	alignment = alignments[index];
 
-		void* pPtr = pHeapManager->alloc(sizeAlloc, alignment);
+		void* pPtr = pHeapAllocator->alloc(sizeAlloc, alignment);
 
 		// check that the returned address has the requested alignment
 		assert((reinterpret_cast<uintptr_t>(pPtr) & (alignment - 1)) == 0);
 #else
-		void* pPtr = pHeapManager->alloc(sizeAlloc);
+		void* pPtr = pHeapAllocator->alloc(sizeAlloc);
 #endif // SUPPORT_ALIGNMENT
 
 		// if allocation failed see if garbage collecting will create a large enough block
 		if (pPtr == nullptr)
 		{
-			pHeapManager->Collect();
+			pHeapAllocator->Collect();
 
 #ifdef SUPPORTS_ALIGNMENT
-			pPtr = pHeapManager->alloc(sizeAlloc, alignment);
+			pPtr = pHeapAllocator->alloc(sizeAlloc, alignment);
 #else
-			pPtr = pHeapManager->alloc(sizeAlloc);
+			pPtr = pHeapAllocator->alloc(sizeAlloc);
 #endif // SUPPORT_ALIGNMENT
 
 			// if not we're done. go on to cleanup phase of test
@@ -133,10 +139,10 @@ bool HeapManager_UnitTest()
 			void* pPtr = AllocatedAddresses.back();
 			AllocatedAddresses.pop_back();
 
-			bool success = pHeapManager->Contains(pPtr) && pHeapManager->IsAllocated(pPtr);
+			bool success = pHeapAllocator->Contains(pPtr) && pHeapAllocator->IsAllocated(pPtr);
 			assert(success);
 
-			success = pHeapManager->free(pPtr);
+			success = pHeapAllocator->free(pPtr);
 			assert(success);
 
 			numFrees++;
@@ -144,7 +150,7 @@ bool HeapManager_UnitTest()
 
 		if ((rand() % garbageCollectAboutEvery) == 0)
 		{
-			pHeapManager->Collect();
+			pHeapAllocator->Collect();
 
 			numCollects++;
 		}
@@ -154,10 +160,10 @@ bool HeapManager_UnitTest()
 #if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
 	printf("After exhausting allocations:\n");
 #ifdef SUPPORTS_SHOWFREEBLOCKS
-	pHeapManager->ShowFreeBlocks();
+	pHeapAllocator->ShowFreeBlocks();
 #endif // SUPPORTS_SHOWFREEBLOCKS
 #ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-	pHeapManager->ShowOutstandingAllocations();
+	pHeapAllocator->ShowOutstandingAllocations();
 #endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
 	printf("\n");
 #endif
@@ -174,57 +180,60 @@ bool HeapManager_UnitTest()
 			void* pPtr = AllocatedAddresses.back();
 			AllocatedAddresses.pop_back();
 
-			bool success = pHeapManager->Contains(pPtr) && pHeapManager->IsAllocated(pPtr);
+			bool success = pHeapAllocator->Contains(pPtr) && pHeapAllocator->IsAllocated(pPtr);
 			assert(success);
 
-			success = pHeapManager->free(pPtr);
+			success = pHeapAllocator->free(pPtr);
 			assert(success);
 		}
 
 #if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
 		printf("After freeing allocations:\n");
 #ifdef SUPPORTS_SHOWFREEBLOCKS
-		pHeapManager->ShowFreeBlocks();
+		pHeapAllocator->ShowFreeBlocks();
 #endif // SUPPORTS_SHOWFREEBLOCKS
 
 #ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-		pHeapManager->ShowOutstandingAllocations();
+		pHeapAllocator->ShowOutstandingAllocations();
 #endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
 		printf("\n");
 #endif
 
 		// do garbage collection
-		pHeapManager->Collect();
+		pHeapAllocator->Collect();
 		// our heap should be one single block, all the memory it started with
 
 #if defined(SUPPORTS_SHOWFREEBLOCKS) || defined(SUPPORTS_SHOWOUTSTANDINGALLOCATIONS)
 		printf("After garbage collection:\n");
 #ifdef SUPPORTS_SHOWFREEBLOCKS
-		pHeapManager->ShowFreeBlocks();
+		pHeapAllocator->ShowFreeBlocks();
 #endif // SUPPORTS_SHOWFREEBLOCKS
 
 #ifdef SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
-		pHeapManager->ShowOutstandingAllocations();
+		pHeapAllocator->ShowOutstandingAllocations();
 #endif // SUPPORTS_SHOWOUTSTANDINGALLOCATIONS
 		printf("\n");
 #endif
 
 		// do a large test allocation to see if garbage collection worked
-		void* pPtr = pHeapManager->alloc(sizeHeap / 2);
+		void* pPtr = pHeapAllocator->alloc(sizeHeap / 2);
 		assert(pPtr);
 
 		if (pPtr)
 		{
-			bool success = pHeapManager->Contains(pPtr) && pHeapManager->IsAllocated(pPtr);
+			bool success = pHeapAllocator->Contains(pPtr) && pHeapAllocator->IsAllocated(pPtr);
 			assert(success);
 
-			success = pHeapManager->free(pPtr);
+			success = pHeapAllocator->free(pPtr);
 			assert(success);
-
 		}
+
+		//pHeapAllocator->ShowFreeBlocks();
 	}
 
-	Destroy(pHeapManager);
+	pHeapManager->Destroy();
+
+	delete pHeapManager;
 	pHeapManager = nullptr;
 
 	// we succeeded

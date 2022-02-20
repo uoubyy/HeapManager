@@ -1,81 +1,32 @@
-#include "HeapManagerProxy.h"
-#include <stdio.h>
-#include <string.h>
-
-#include <Windows.h>
-
-#if _DEBUG
-#define GUARD_BAND_SIZE 4
-#else
-#define GUARD_BAND_SIZE 0
-#endif
+#include "HeapAllocator.h"
+#include "string.h"
+#include <assert.h>
+#include <new>
+#include "stdio.h"
+#include "Utils.h"
 
 namespace HeapManagerProxy
 {
-	size_t HeapManager::s_MinumumToLeave = sizeof(MemoryBlock);
-	unsigned char HeapManager::_bNoMansLandFill = 0xFD;
-	unsigned char HeapManager::_bAlignLandFill = 0XED;
-	unsigned char HeapManager::_bDeadLandFill = 0XDD;
-	unsigned char HeapManager::_bCleanLandFill = 0xCD;
+	size_t HeapAllocator::s_MinumumToLeave = sizeof(MemoryBlock);
 
-	HeapManager* CreateHeapManager(const size_t sizeHeap, const unsigned int numDescriptors, void* pHeapMemory)
-	{
-		if (pHeapMemory == nullptr)
-		{
-#ifdef USE_HEAP_ALLOC
-			pHeapMemory = HeapAlloc(GetProcessHeap(), 0, sizeHeap);
-#else
-			// Get SYSTEM_INFO, which includes the memory page size
-			SYSTEM_INFO SysInfo;
-			GetSystemInfo(&SysInfo);
-			// round our size to a multiple of memory page size
-			assert(SysInfo.dwPageSize > 0);
-			size_t sizeHeapInPageMultiples = SysInfo.dwPageSize * ((sizeHeap + SysInfo.dwPageSize) / SysInfo.dwPageSize);
-
-			assert(sizeHeapInPageMultiples > sizeof(HeapManager));
-			pHeapMemory = VirtualAlloc(NULL, sizeHeapInPageMultiples, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#endif
-		}
-
-		assert((pHeapMemory != nullptr) && (sizeHeap > 0));
-
-		HeapManager* pManager = reinterpret_cast<HeapManager*>(pHeapMemory);
-
-		void* pHeapAllocatorMemory = pManager + 1;
-
-		return new (pHeapMemory) HeapManager(pHeapAllocatorMemory, sizeHeap - sizeof(HeapManager));
-	}
-
-	void Destroy(HeapManager* pHeapManager)
-	{
-		if (pHeapManager)
-		{
-			if (pHeapManager->IsEmpty() == false)
-			{
-				fprintf(stderr, "HeapManager still has outstanding blocks!");
-				return;
-			}
-#ifdef USE_HEAP_ALLOC
-			HeapFree(GetProcessHeap(), 0, pHeapManager);
-#else
-			VirtualFree(pHeapManager, 0, MEM_RELEASE);
-#endif
-		}
-	}
-
-	HeapManager::HeapManager(void* pHeapAllocatorMemory, const size_t sizeHeap)
+	HeapAllocator::HeapAllocator(void* i_pAllocatorMemory, const size_t sizeHeap)
 	{
 		pFreeList = nullptr;
 		pOutstandingAllocations = nullptr;
 
-		pHeapStartAddress = pHeapAllocatorMemory;
+		pHeapStartAddress = i_pAllocatorMemory;
 		pHeapEndAddress = static_cast<char*>(pHeapStartAddress) + sizeHeap;
 
 		pHeapAllocedEndAddress = pHeapEndAddress;
 		memset(pHeapStartAddress, _bDeadLandFill, sizeHeap);
 	}
 
-	void* HeapManager::alloc(const size_t sizeAlloc, const unsigned int alignment)
+	HeapAllocator::~HeapAllocator()
+	{
+		assert(pOutstandingAllocations == nullptr);
+	}
+
+	void* HeapAllocator::alloc(const size_t sizeAlloc, const unsigned int alignment /*= 4*/)
 	{
 		// GUARD_BAND only exist in _DEBUG
 		MemoryBlock* pBlockDescriptor = FindFirstFittingFreeBlock(GUARD_BAND_SIZE + sizeAlloc + GUARD_BAND_SIZE, alignment);
@@ -84,7 +35,7 @@ namespace HeapManagerProxy
 			return nullptr;
 
 		size_t maxCapacity = 0;
-		void* pAvailableStart = AlignUpAddress(static_cast<char*>(pHeapStartAddress) + s_MinumumToLeave + GUARD_BAND_SIZE, alignment);
+		void* pAvailableStart = Utils::AlignUpAddress(static_cast<char*>(pHeapStartAddress) + s_MinumumToLeave + GUARD_BAND_SIZE, alignment);
 		void* pAvailableEnd = pHeapEndAddress;
 
 		if (pAvailableEnd > pAvailableStart)
@@ -97,7 +48,7 @@ namespace HeapManagerProxy
 		}
 
 		// the alignment is for user memory start point
-		char* pBlockStartAddress = static_cast<char*>(AlignDownAddress(static_cast<char*>(pHeapEndAddress) - GUARD_BAND_SIZE - sizeAlloc, alignment));
+		char* pBlockStartAddress = static_cast<char*>(Utils::AlignDownAddress(static_cast<char*>(pHeapEndAddress) - GUARD_BAND_SIZE - sizeAlloc, alignment));
 
 		pBlockDescriptor->pBaseAddress = pBlockStartAddress - GUARD_BAND_SIZE;
 		pBlockDescriptor->BlockSize = static_cast<char*>(pHeapEndAddress) - (pBlockStartAddress - GUARD_BAND_SIZE);
@@ -119,7 +70,7 @@ namespace HeapManagerProxy
 		return pUserMemory;
 	}
 
-	bool HeapManager::free(const void* pPtr)
+	bool HeapAllocator::free(const void* pPtr)
 	{
 		// assert(Contains(pPtr));
 		if (Contains(pPtr) == false)
@@ -152,7 +103,7 @@ namespace HeapManagerProxy
 		return (pCurBlock != nullptr);
 	}
 
-	void HeapManager::Collect()
+	void HeapAllocator::Collect()
 	{
 		if (pFreeList == nullptr)
 			return;
@@ -181,7 +132,7 @@ namespace HeapManagerProxy
 				}
 			}
 			else
-			{
+			{ 
 				pCurBlock = pNextBlock;
 				pNextBlock = pNextBlock->pNextBlock;
 			}
@@ -202,12 +153,12 @@ namespace HeapManagerProxy
 		}
 	}
 
-	bool HeapManager::Contains(const void* pPtr)
+	bool HeapAllocator::Contains(const void* pPtr)
 	{
 		return (pPtr >= pHeapStartAddress && pPtr <= pHeapAllocedEndAddress);
 	}
 
-	bool HeapManager::IsAllocated(const void* pPtr)
+	bool HeapAllocator::IsAllocated(const void* pPtr)
 	{
 		MemoryBlock* pBlock = pOutstandingAllocations;
 		while (pBlock)
@@ -221,7 +172,7 @@ namespace HeapManagerProxy
 		return (pBlock != nullptr);
 	}
 
-	void HeapManager::ShowFreeBlocks()
+	void HeapAllocator::ShowFreeBlocks()
 	{
 		printf("Free Blocks:\n");
 		printf("Start\t Address\tEnd\t Address\tSize\t\n");
@@ -242,7 +193,7 @@ namespace HeapManagerProxy
 		}
 	}
 
-	void HeapManager::ShowOutstandingAllocations()
+	void HeapAllocator::ShowOutstandingAllocations()
 	{
 		printf("Allocated Blocks:\n");
 		printf("Start\t Address\tEnd\t Address\tSize\t\n");
@@ -257,10 +208,48 @@ namespace HeapManagerProxy
 
 			pCurBlock = pCurBlock->pNextBlock;
 		}
+	}
+
+	void HeapAllocator::Destroy()
+	{
 
 	}
 
-	MemoryBlock* HeapManager::FindFirstFittingFreeBlock(const size_t i_size, const unsigned int alignment)
+	// the largest real size for user memory
+	size_t HeapAllocator::GetLargestFreeBlock(const unsigned int alignment /*=4*/)
+	{
+
+		size_t iMaxCapacity = 0;
+
+		char* pMaxUserMemoryEnd = static_cast<char*>(pHeapEndAddress) - GUARD_BAND_SIZE;
+		char* pMaxUserMemoryStart = static_cast<char*>(Utils::AlignUpAddress(static_cast<char*>(pHeapStartAddress) + s_MinumumToLeave + GUARD_BAND_SIZE, alignment));
+
+		if (pMaxUserMemoryStart < pMaxUserMemoryEnd)
+			iMaxCapacity = pMaxUserMemoryEnd - pMaxUserMemoryStart;
+	
+		MemoryBlock* pCurBlock = pFreeList;
+
+		while (pCurBlock)
+		{
+
+			if (pCurBlock->BlockSize > 0)
+			{
+				void* start = Utils::AlignUpAddress(static_cast<char*>(pCurBlock->pBaseAddress) + GUARD_BAND_SIZE, alignment);
+				void* end = static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize;
+
+				size_t capacity = static_cast<char*>(end) - static_cast<char*>(start) - GUARD_BAND_SIZE;
+				iMaxCapacity = capacity > iMaxCapacity ? capacity : iMaxCapacity;
+			}
+
+			pCurBlock = pCurBlock->pNextBlock;
+		}
+
+		return iMaxCapacity;
+	}
+
+	// required size i_size is with header and tail guard band
+	// the real user memory size is i_size - GUARD_BAND_SIZE - GUARD_BAND_SIZE
+	MemoryBlock* HeapAllocator::FindFirstFittingFreeBlock(const size_t i_size, const unsigned int alignment /*= 4*/)
 	{
 		MemoryBlock* pCurBlock = pFreeList;
 		MemoryBlock* pPrevBlock = nullptr;
@@ -274,7 +263,7 @@ namespace HeapManagerProxy
 			{
 				pCurBlockEndAddress = static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize;
 				// the alignment is for user memory
-				pUserMemory = static_cast<char*>(AlignDownAddress(static_cast<char*>(pCurBlockEndAddress) - i_size + GUARD_BAND_SIZE, alignment));
+				pUserMemory = static_cast<char*>(Utils::AlignDownAddress(static_cast<char*>(pCurBlockEndAddress) - i_size + GUARD_BAND_SIZE, alignment));
 
 				// this block is large enough after alignment and guard
 				if (pUserMemory - GUARD_BAND_SIZE >= pCurBlock->pBaseAddress)
@@ -319,13 +308,12 @@ namespace HeapManagerProxy
 		return pCurBlock;
 	}
 
-	MemoryBlock* HeapManager::FindBestFittingFreeBlock(const size_t i_size, const unsigned int alignment)
+	MemoryBlock* HeapAllocator::FindBestFittingFreeBlock(const size_t i_size, const unsigned int alignment /*= 4*/)
 	{
-		// TODO
 		return nullptr;
 	}
 
-	MemoryBlock* HeapManager::GetFreeMemoryBlockDescriptor()
+	MemoryBlock* HeapAllocator::GetFreeMemoryBlockDescriptor()
 	{
 		MemoryBlock* pCurBlock = pFreeList;
 		MemoryBlock* pPrevBlock = nullptr;
@@ -352,7 +340,7 @@ namespace HeapManagerProxy
 		return pCurBlock;
 	}
 
-	MemoryBlock* HeapManager::CreateFreeMemoryBlockDescriptor()
+	MemoryBlock* HeapAllocator::CreateFreeMemoryBlockDescriptor()
 	{
 		if (static_cast<char*>(pHeapStartAddress) + sizeof(MemoryBlock) > pHeapEndAddress)
 			return nullptr; // out of all memory
@@ -364,7 +352,7 @@ namespace HeapManagerProxy
 		return pNewBlock;
 	}
 
-	void HeapManager::ReturnMemoryBlockDescriptor(MemoryBlock* i_pFreeBlock)
+	void HeapAllocator::ReturnMemoryBlockDescriptor(MemoryBlock* i_pFreeBlock)
 	{
 		if (pFreeList == nullptr)
 		{
@@ -380,7 +368,7 @@ namespace HeapManagerProxy
 		{
 			MemoryBlock* pCurBlock = pFreeList;
 			MemoryBlock* pPrevBlock = nullptr;
-			while (pCurBlock)
+			while(pCurBlock)
 			{
 				if (pCurBlock->BlockSize > 0 && static_cast<char*>(i_pFreeBlock->pBaseAddress) + i_pFreeBlock->BlockSize < pCurBlock->pBaseAddress)
 					break;
@@ -445,35 +433,5 @@ namespace HeapManagerProxy
 				}
 			}
 		}
-	}
-
-	size_t HeapManager::GetLargestFreeBlock(const unsigned int alignment)
-	{
-		size_t iMaxCapacity = 0;
-
-		char* pMaxUserMemoryEnd = static_cast<char*>(pHeapEndAddress) - GUARD_BAND_SIZE;
-		char* pMaxUserMemoryStart = static_cast<char*>(AlignUpAddress(static_cast<char*>(pHeapStartAddress) + s_MinumumToLeave + GUARD_BAND_SIZE, alignment));
-
-		if (pMaxUserMemoryStart < pMaxUserMemoryEnd)
-			iMaxCapacity = pMaxUserMemoryEnd - pMaxUserMemoryStart;
-
-		MemoryBlock* pCurBlock = pFreeList;
-
-		while (pCurBlock)
-		{
-
-			if (pCurBlock->BlockSize > 0)
-			{
-				void* start = AlignUpAddress(static_cast<char*>(pCurBlock->pBaseAddress) + GUARD_BAND_SIZE, alignment);
-				void* end = static_cast<char*>(pCurBlock->pBaseAddress) + pCurBlock->BlockSize;
-
-				size_t capacity = static_cast<char*>(end) - static_cast<char*>(start) - GUARD_BAND_SIZE;
-				iMaxCapacity = capacity > iMaxCapacity ? capacity : iMaxCapacity;
-			}
-
-			pCurBlock = pCurBlock->pNextBlock;
-		}
-
-		return iMaxCapacity;
 	}
 }
